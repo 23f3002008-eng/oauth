@@ -1,63 +1,90 @@
+```python
+import os
 import time
 import uuid
-from typing import List
 
-from fastapi import FastAPI, Query, Request, Response
-from fastapi.middleware.cors import CORSMiddleware
+import jwt
+from fastapi import FastAPI, HTTPException, Request
 
-ALLOWED_ORIGIN = "https://dash-1wxh1c.example.com"
-EMAIL = "23f3002008@ds.study.iitm.ac.in"
+ISSUER = "https://idp.exam.local"
+AUDIENCE = "tds-nf659zb8.apps.exam.local"
+PUBLIC_KEY = os.getenv("JWT_PUBLIC_KEY", "").replace("\\n", "\n")
 
-app = FastAPI()
-
-# CORS: allow ONLY the assigned origin. Do not use "*".
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[ALLOWED_ORIGIN],
-    allow_credentials=False,
-    allow_methods=["GET", "OPTIONS"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="OAuth 2.0 / OIDC Token Verification Service")
 
 
 @app.middleware("http")
-async def add_required_headers(request: Request, call_next):
+async def add_request_headers(request: Request, call_next):
     start = time.perf_counter()
-
-    response: Response = await call_next(request)
-
-    elapsed = max(0.0, time.perf_counter() - start)
-
+    response = await call_next(request)
     response.headers["X-Request-ID"] = str(uuid.uuid4())
-    response.headers["X-Process-Time"] = f"{elapsed:.6f}"
-
+    response.headers["X-Process-Time"] = (
+        f"{max(0.0, time.perf_counter() - start):.6f}"
+    )
     return response
 
 
-@app.get("/stats")
-def stats(values: str = Query(...)):
+@app.post("/verify")
+async def verify_token(request: Request):
     try:
-        numbers: List[int] = [int(item.strip()) for item in values.split(",") if item.strip() != ""]
-    except ValueError:
-        return {"error": "All values must be integers separated by commas."}
+        body = await request.json()
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail={"valid": False, "error": "invalid_json"},
+        )
 
-    if not numbers:
-        return {"error": "Provide at least one integer in the values parameter."}
+    token = body.get("token") if isinstance(body, dict) else None
+    if not isinstance(token, str) or not token:
+        raise HTTPException(
+            status_code=400,
+            detail={"valid": False, "error": "missing_token"},
+        )
 
-    count = len(numbers)
-    total = sum(numbers)
-    minimum = min(numbers)
-    maximum = max(numbers)
-    mean = total / count
+    if not PUBLIC_KEY.strip():
+        raise HTTPException(
+            status_code=500,
+            detail="JWT_PUBLIC_KEY is not configured",
+        )
 
-    return {
-        "email": EMAIL,
-        "count": count,
-        "sum": total,
-        "min": minimum,
-        "max": maximum,
-        "mean": mean,
-    }
+    try:
+        claims = jwt.decode(
+            token,
+            PUBLIC_KEY,
+            algorithms=["RS256"],
+            issuer=ISSUER,
+            audience=AUDIENCE,
+            options={"require": ["exp", "iss", "aud", "sub"]},
+        )
+        return {
+            "valid": True,
+            "email": claims.get("email", ""),
+            "sub": claims.get("sub", ""),
+            "aud": claims.get("aud", ""),
+        }
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=401,
+            detail={"valid": False, "error": "expired"},
+        )
+    except jwt.InvalidAudienceError:
+        raise HTTPException(
+            status_code=401,
+            detail={"valid": False, "error": "invalid_audience"},
+        )
+    except jwt.InvalidIssuerError:
+        raise HTTPException(
+            status_code=401,
+            detail={"valid": False, "error": "invalid_issuer"},
+        )
+    except jwt.InvalidTokenError:
+        raise HTTPException(
+            status_code=401,
+            detail={"valid": False, "error": "invalid_token"},
+        )
+
+
 @app.get("/")
 async def root():
     return {"status": "ok", "endpoint": "/verify"}
+```
