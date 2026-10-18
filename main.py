@@ -58,3 +58,6 @@ def stats(values: str = Query(...)):
         "max": maximum,
         "mean": mean,
     }
+@app.get("/")
+async def root():
+    return {"status": "ok", "endpoint": "/verify"}
